@@ -34,3 +34,37 @@ on a.pid = b.pid
 where a.query != '<IDLE>' and a.query not like '%pg_stat_activity%'
 
 order by b.granted, b.pid desc;
+
+
+-- 3. Database name and size
+
+select
+  
+	datname as db,
+	
+	pg_size_pretty(pg_database_size(datname)) as db_size
+	
+from pg_database
+
+order by pg_database_size(datname) desc;
+
+
+-- 4. Table, index, schema name and size
+
+select
+
+	concat(nspname, '.', relname) as relation_name,
+	
+	pg_size_pretty(pg_total_relation_size(a.oid)) as relation_size,
+
+	pg_size_pretty(sum(pg_total_relation_size(a.oid)) over(partition by nspname)) as schema_size
+
+from pg_class a
+
+left join pg_namespace b
+
+on a.relnamespace = b.oid
+
+where b.nspname not in ('pg_catalog', 'information_schema') and b.nspname !~ '^pg_toast'
+
+order by pg_total_relation_size(a.oid) desc;
