@@ -68,3 +68,26 @@ on a.relnamespace = b.oid
 where b.nspname not in ('pg_catalog', 'information_schema') and b.nspname !~ '^pg_toast'
 
 order by pg_total_relation_size(a.oid) desc;
+
+
+-- 5. Unused indexes
+ 
+select
+
+	relname as table_name,
+	
+	indexrelname as index_name,
+	
+	idx_scan,
+	
+	idx_tup_read,
+	
+	idx_tup_fetch,
+	
+	pg_size_pretty(pg_relation_size(indexrelname::regclass))
+	
+from pg_stat_all_indexes
+
+where schemaname not in ('pg_catalog', 'pg_toast') and idx_scan = 0 and idx_tup_read = 0 and idx_tup_fetch = 0
+
+order by pg_relation_size(indexrelname::regclass) desc;
