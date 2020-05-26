@@ -93,7 +93,7 @@ where schemaname not in ('pg_catalog', 'pg_toast') and idx_scan = 0 and idx_tup_
 order by pg_relation_size(indexrelname::regclass) desc;
 
 
--- 6. Table bloats
+-- 6. Table bloats - When you see a table with high bloats, then consider running VACUUM ANALYZE on it.
 
 with
 
@@ -111,9 +111,9 @@ with
 	
 			schemaname, tablename, hdr, ma, bs,
 			
-			sum((1 - coalesce(null_frac, 0)) * coalesce(avg_width, 2048)) as datawidth,
+			sum((1 - null_frac) * avg_width) as datawidth,
 			
-			max(coalesce(null_frac, 0)) as maxfracsum,
+			max(null_frac) as maxfracsum,
 			
 			hdr + (select 1 + count(*) / 8
 			
@@ -137,17 +137,9 @@ with
 		
 	sml as (select
 	
-			schemaname,
+			schemaname, tablename, cc.reltuples, cc.relpages, bs,
 			
-			tablename,
-			
-			coalesce(cc.reltuples, 0) as reltuples,
-			
-			coalesce(cc.relpages, 0) as relpages,
-			
-			coalesce(bs, 0) as bs,
-			
-			coalesce(ceil((cc.reltuples * ((datahdr+ma - (case when datahdr%ma = 0 then ma else datahdr%ma end)) + nullhdr2 + 4)) / (bs - 20::float)), 0) as otta,
+			ceil((cc.reltuples * ((datahdr+ma - (case when datahdr%ma = 0 then ma else datahdr%ma end)) + nullhdr2 + 4)) / (bs - 20::float)) as otta,
 			
 			coalesce(c2.relname, '?') as iname,
 			
@@ -177,35 +169,17 @@ with
 		
 select
 
-	current_database(), schemaname, tablename, reltuples::bigint as tups, relpages::bigint as pages, otta,
+	current_database(), schemaname, tablename,
 	
 	round(case when otta = 0 or sml.relpages = 0 or sml.relpages = otta then 0.0 else sml.relpages / otta::numeric end, 1) as tbloat,
 	
-	case when relpages < otta then 0 else relpages::bigint - otta end as wastedpages,
-	
 	case when relpages < otta then 0 else bs*(sml.relpages-otta)::bigint end as wastedbytes,
 	
-	case when relpages < otta then 0 else (bs*(relpages-otta))::bigint end as wastedsize,
-	
-	iname, ituples::bigint as itups, ipages::bigint as ipages, iotta,
+	iname,
 	
 	round(case when iotta = 0 or ipages = 0 or ipages = iotta then 0.0 else ipages / iotta::numeric end, 1) as ibloat,
 	
-	case when ipages < iotta then 0 else ipages::bigint - iotta end as wastedipages,
-	
-	case when ipages < iotta then 0 else bs*(ipages-iotta) end as wastedibytes,
-	
-	case when ipages < iotta then 0 else (bs*(ipages-iotta))::bigint end as wastedisize,
-	
-	case when relpages < otta then
-	
-		case when ipages < iotta then 0 else bs*(ipages-iotta::bigint) end
-		
-	else
-	
-		case when ipages < iotta then bs * (relpages - otta::bigint) else bs * (relpages - otta::bigint + ipages - iotta::bigint) end
-	
-	end as totalwastedbytes
+	case when ipages < iotta then 0 else bs*(ipages-iotta) end as wastedibytes
 		
 from sml
 
