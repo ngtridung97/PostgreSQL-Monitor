@@ -91,3 +91,132 @@ from pg_stat_all_indexes
 where schemaname not in ('pg_catalog', 'pg_toast') and idx_scan = 0 and idx_tup_read = 0 and idx_tup_fetch = 0
 
 order by pg_relation_size(indexrelname::regclass) desc;
+
+
+-- 6. Table bloats
+
+with
+
+	constants as (select
+	
+			(select current_setting('block_size')::numeric) as bs,
+			
+			case when substring(split_part(version(), ' ', 2) from '#"[0-9]+.[0-9]+#"%' for '#') in ('8.0', '8.1', '8.2') then 27 else 23 end as hdr,
+			
+			case when (version() ~ 'mingw32' or version() ~ '64-bit') then 8 else 4 end as ma
+	
+		from version()),
+	
+	foo as (select
+	
+			ns.nspname, tbl.relname, hdr, ma, bs,
+			
+			sum((1 - coalesce(null_frac, 0)) * coalesce(avg_width, 2048)) as datawidth,
+			
+			max(coalesce(null_frac, 0)) as maxfracsum,
+			
+			hdr + (select 1 + count(*) / 8
+			
+				from pg_stats s2
+				
+				where null_frac != 0 and s2.schemaname = ns.nspname and s2.tablename = tbl.relname) as nullhdr
+      
+		from pg_attribute att
+		
+		inner join pg_class tbl
+		
+		on att.attrelid = tbl.oid
+		
+		inner join pg_namespace ns
+		
+		on ns.oid = tbl.relnamespace
+		
+		left join pg_stats s
+		
+		on s.schemaname = ns.nspname and s.tablename = tbl.relname and s.inherited = false and s.attname = att.attname,
+		
+		constants
+		
+		group by ns.nspname, tbl.relname, hdr, ma, bs),
+		
+	rs as (select
+	
+			ma, bs, foo.nspname, foo.relname,
+			
+			(datawidth + (hdr + ma - (case when hdr%ma = 0 then ma else hdr%ma end)))::numeric as datahdr,
+			
+			(maxfracsum * (nullhdr + ma - (case when nullhdr%ma = 0 then ma else nullhdr%ma end))) as nullhdr2
+		
+		from foo),
+		
+	sml as (select
+	
+			nn.nspname as schemaname,
+			
+			cc.relname as tablename,
+			
+			coalesce(cc.reltuples, 0) as reltuples,
+			
+			coalesce(cc.relpages, 0) as relpages,
+			
+			coalesce(bs, 0) as bs,
+			
+			coalesce(ceil((cc.reltuples * ((datahdr+ma - (case when datahdr%ma = 0 then ma else datahdr%ma end)) + nullhdr2 + 4)) / (bs - 20::float)), 0) as otta,
+			
+			coalesce(c2.relname, '?') as iname,
+			
+			coalesce(c2.reltuples, 0) as ituples,
+			
+			coalesce(c2.relpages, 0) as ipages,
+			
+			coalesce(ceil((c2.reltuples * (datahdr - 12)) / (bs - 20::float)), 0) as iotta -- very rough approximation, assumes all cols
+		
+		from pg_class cc
+		
+		inner join pg_namespace nn on cc.relnamespace = nn.oid 
+		
+		left join rs
+		
+		on cc.relname = rs.relname and nn.nspname = rs.nspname
+		
+		left join pg_index i
+		
+		on indrelid = cc.oid
+		
+		left join pg_class c2
+		
+		on c2.oid = i.indexrelid)
+		
+select
+
+	current_database(), schemaname, tablename, reltuples::bigint as tups, relpages::bigint as pages, otta,
+	
+	round(case when otta = 0 or sml.relpages = 0 or sml.relpages = otta then 0.0 else sml.relpages / otta::numeric end, 1) as tbloat,
+	
+	case when relpages < otta then 0 else relpages::bigint - otta end as wastedpages,
+	
+	case when relpages < otta then 0 else bs*(sml.relpages-otta)::bigint end as wastedbytes,
+	
+	case when relpages < otta then 0 else (bs*(relpages-otta))::bigint end as wastedsize,
+	
+	iname, ituples::bigint as itups, ipages::bigint as ipages, iotta,
+	
+	round(case when iotta = 0 or ipages = 0 or ipages = iotta then 0.0 else ipages / iotta::numeric end, 1) as ibloat,
+	
+	case when ipages < iotta then 0 else ipages::bigint - iotta end as wastedipages,
+	
+	case when ipages < iotta then 0 else bs*(ipages-iotta) end as wastedibytes,
+	
+	case when ipages < iotta then 0 else (bs*(ipages-iotta))::bigint end as wastedisize,
+	
+	case when relpages < otta then
+	
+		case when ipages < iotta then 0 else bs*(ipages-iotta::bigint) end
+		
+	else
+	
+		case when ipages < iotta then bs * (relpages - otta::bigint) else bs * (relpages - otta::bigint + ipages - iotta::bigint) end
+	
+	end as totalwastedbytes
+		
+from sml;
