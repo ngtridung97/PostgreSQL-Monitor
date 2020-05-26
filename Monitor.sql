@@ -103,13 +103,13 @@ with
 			
 			case when substring(split_part(version(), ' ', 2) from '#"[0-9]+.[0-9]+#"%' for '#') in ('8.0', '8.1', '8.2') then 27 else 23 end as hdr,
 			
-			case when (version() ~ 'mingw32' or version() ~ '64-bit') then 8 else 4 end as ma
+			case when trim(split_part(version(), ',', 3)) in ('mingw32', '64-bit') then 8 else 4 end as ma
 	
 		from version()),
 	
 	foo as (select
 	
-			ns.nspname, tbl.relname, hdr, ma, bs,
+			schemaname, tablename, hdr, ma, bs,
 			
 			sum((1 - coalesce(null_frac, 0)) * coalesce(avg_width, 2048)) as datawidth,
 			
@@ -119,29 +119,15 @@ with
 			
 				from pg_stats s2
 				
-				where null_frac != 0 and s2.schemaname = ns.nspname and s2.tablename = tbl.relname) as nullhdr
+				where null_frac != 0 and s2.schemaname = s.schemaname and s2.tablename = s.tablename) as nullhdr
       
-		from pg_attribute att
+		from pg_stats s, constants
 		
-		inner join pg_class tbl
-		
-		on att.attrelid = tbl.oid
-		
-		inner join pg_namespace ns
-		
-		on ns.oid = tbl.relnamespace
-		
-		left join pg_stats s
-		
-		on s.schemaname = ns.nspname and s.tablename = tbl.relname and s.inherited = false and s.attname = att.attname,
-		
-		constants
-		
-		group by ns.nspname, tbl.relname, hdr, ma, bs),
+		group by schemaname, tablename, hdr, ma, bs),
 		
 	rs as (select
 	
-			ma, bs, foo.nspname, foo.relname,
+			ma, bs, schemaname,tablename,
 			
 			(datawidth + (hdr + ma - (case when hdr%ma = 0 then ma else hdr%ma end)))::numeric as datahdr,
 			
@@ -151,9 +137,9 @@ with
 		
 	sml as (select
 	
-			nn.nspname as schemaname,
+			schemaname,
 			
-			cc.relname as tablename,
+			tablename,
 			
 			coalesce(cc.reltuples, 0) as reltuples,
 			
@@ -171,21 +157,23 @@ with
 			
 			coalesce(ceil((c2.reltuples * (datahdr - 12)) / (bs - 20::float)), 0) as iotta -- very rough approximation, assumes all cols
 		
-		from pg_class cc
-		
-		inner join pg_namespace nn on cc.relnamespace = nn.oid 
-		
-		left join rs
-		
-		on cc.relname = rs.relname and nn.nspname = rs.nspname
-		
-		left join pg_index i
-		
-		on indrelid = cc.oid
-		
-		left join pg_class c2
-		
-		on c2.oid = i.indexrelid)
+		from rs
+
+        inner join pg_class cc
+        
+        on cc.relname = rs.tablename
+
+        inner join pg_namespace nn
+        
+        on cc.relnamespace = nn.oid and nn.nspname = rs.schemaname
+
+        left join pg_index i
+        
+        on indrelid = cc.oid
+
+        left join pg_class c2
+        
+        on c2.oid = i.indexrelid)
 		
 select
 
@@ -219,4 +207,6 @@ select
 	
 	end as totalwastedbytes
 		
-from sml;
+from sml
+
+where schemaname not in ('pg_catalog', 'information_schema') and schemaname !~ '^pg_toast';
