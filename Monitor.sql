@@ -184,3 +184,68 @@ select
 from sml
 
 where schemaname not in ('pg_catalog', 'information_schema') and schemaname !~ '^pg_toast';
+
+-- 7. Index tuples
+
+with
+
+	foo as (select
+	
+			c.relname as ctablename, ipg.relname as indexname,
+			
+			x.indnatts as number_of_columns, idx_scan, idx_tup_read, idx_tup_fetch, indexrelname, indisunique
+			
+			from pg_index x
+			
+			inner join pg_class c
+			
+			on c.oid = x.indrelid
+			
+			inner join pg_class ipg
+			
+			on ipg.oid = x.indexrelid
+			
+			inner join pg_stat_all_indexes psai
+			
+			on x.indexrelid = psai.indexrelid)
+
+select
+
+    t.tablename, foo.indexname,
+    
+    c.reltuples as row_Count,
+    
+    pg_size_pretty(pg_relation_size(quote_ident(t.tablename)::text)) as table_size,
+    
+    pg_size_pretty(pg_relation_size(quote_ident(indexrelname)::text)) as index_size,
+    
+    idx_scan as number_of_scans, idx_tup_read as tuples_read, idx_tup_fetch as tuples_fetched
+
+from pg_tables t
+
+left join pg_class c
+
+on t.tablename = c.relname
+
+left join foo
+
+on t.tablename = foo.ctablename
+
+where t.schemaname = 'public'
+
+order by t.tablename, indexname;
+
+
+-- 8. Tables cache
+
+select
+
+	current_database(), schemaname, relname as tablename,
+	
+	heap_blks_read as heap_read,
+	
+	heap_blks_hit as heap_hit,
+	
+	((heap_blks_hit * 100) / nullif((heap_blks_hit + heap_blks_read), 0)) as ratio
+	
+from pg_statio_user_tables;
